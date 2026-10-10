@@ -6,7 +6,8 @@ import { VitePWA } from 'vite-plugin-pwa'
 const API_PORT = Number(process.env.API_PORT ?? 3001)
 
 const apiProxy = {
-  '/api': { target: `http://localhost:${API_PORT}`, changeOrigin: true },
+  // 127.0.0.1 y no "localhost": la API solo escucha en IPv4 loopback y localhost puede resolver a ::1
+  '/api': { target: `http://127.0.0.1:${API_PORT}`, changeOrigin: true },
 }
 
 // https://vite.dev/config/

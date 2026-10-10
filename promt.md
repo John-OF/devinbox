@@ -73,7 +73,7 @@ Ejecuta la implementación en las siguientes fases autónomamente, comprobando q
 - **Fase 5 - PWA & Testing:** Configura el Service Worker básico, el manifest con `share_target` y valida que todo compile con `npm run build` sin errores de TypeScript ni linter.
 > **Estado (2026-10-10):** Fases 1 a 5 completadas y verificadas en el navegador. `npm run build`, `npm run lint` y `npm test` (40 tests) pasan sin errores.
 
-- **Fase 6 - Deploy & Sincronización:** Neon + Drizzle, endpoints de sincronización, `SyncService` en el cliente y despliegue en Vercel (ver sección 5). **Requiere confirmación antes de ejecutarse:** crea recursos en las cuentas de Vercel y Neon.
+- **Fase 6 - Deploy & Sincronización:** login con contraseña y sesión por cookie, Neon + Drizzle, endpoints de sincronización, `SyncService` en el cliente y despliegue en Vercel (ver sección 5, "Despliegue y sincronización" y "Seguridad"). **Requiere confirmación antes de ejecutarse:** crea recursos en las cuentas de Vercel y Neon.
 
 ### 5. Decisiones Técnicas (resuelven las ambigüedades de las secciones anteriores)
 
@@ -155,15 +155,38 @@ Ejecuta la implementación en las siguientes fases autónomamente, comprobando q
 - **API de sincronización:**
   - `GET /api/resources?since=<ISO>`: cambios desde la última sincronización, borrados incluidos.
   - `PUT /api/resources`: upsert por lotes de los cambios locales.
-- **Acceso:**
-  - Token secreto en la variable de entorno `DEVINBOX_TOKEN`, exigido en todos los endpoints, incluido `/api/scrape`, para que nadie use el scraper como proxy.
-  - El cliente lo pide una vez por dispositivo, lo guarda en localStorage y lo envía como `Authorization: Bearer`.
+- **Acceso:** login con contraseña y sesión por cookie `HttpOnly` (ver "Seguridad").
 - **Sincronización local-first:**
   - La UI sigue hablando solo con Dexie: toda escritura va primero a Dexie y queda marcada como pendiente.
   - Un `SyncService` envía los pendientes y trae los cambios (`since`) en estos momentos: al abrir la app, al recuperar foco o conexión, y tras cada escritura (con debounce).
   - Conflictos: gana el `updatedAt` más reciente.
 
+#### Seguridad (Fase 6)
+Principio: la web (HTML/JS) puede ser pública porque no contiene datos. **Todo dato pasa por la API y la API exige sesión.** La seguridad no depende de que el link sea secreto.
+
+- **Login de un solo usuario con contraseña:**
+  - En el servidor solo vive el hash (scrypt) en la variable de entorno `DEVINBOX_PASSWORD_HASH`. La contraseña solo viaja en el login, por HTTPS.
+  - Comparación en tiempo constante (`crypto.timingSafeEqual`) y mensaje de error genérico.
+  - `npm run hash-password` genera el hash en local.
+- **Sesión en cookie, no en localStorage:**
+  - `POST /api/login` responde con la cookie `devinbox_session`: `HttpOnly; Secure; SameSite=Strict; Path=/api`, firmada con HMAC usando `SESSION_SECRET` y con expiración de 180 días.
+  - El JavaScript de la página no puede leerla, así que un script inyectado no puede robar la sesión.
+  - `POST /api/logout` la borra. Cambiar `SESSION_SECRET` en Vercel invalida todas las sesiones (por ejemplo, si pierdes el móvil).
+  - Share Target sigue funcionando: las llamadas a `/api` salen de la propia app, así que la cookie viaja.
+- **Toda la API exige sesión**, incluido `/api/scrape`, para que nadie use el scraper como proxy. Sin sesión responde `401`. Solo quedan abiertos `POST /api/login` y `GET /api/health`.
+- **Límite de intentos de login:** 5 fallos → bloqueo de 15 minutos. El contador vive en una tabla de Neon (`login_attempts`), porque en serverless la memoria no persiste entre invocaciones.
+- **Protección de los datos ante una sesión robada:**
+  - La API nunca borra filas: eliminar = `deletedAt`.
+  - Un trigger de Postgres copia la versión anterior de cada fila a `resources_history` en cada `UPDATE`. Ni sobrescribir campos destruye información.
+  - La restauración de Neon queda como última red.
+- **Cabeceras** (en `vercel.json`):
+  - `Content-Security-Policy`: `default-src 'self'`; `img-src 'self' https: data:` (miniaturas de cualquier sitio); `style-src 'self' 'unsafe-inline'` (los toasts inyectan estilos); `connect-src 'self'`; `frame-ancestors 'none'`.
+  - `Referrer-Policy: no-referrer` y `X-Content-Type-Options: nosniff`.
+- **Orden obligatorio:** la API de recursos no se conecta a la base de datos hasta que el login funcione y se verifique que cualquier petición sin sesión devuelve `401`.
+- **Desarrollo local:** el servidor escucha solo en `127.0.0.1`, no en la red Wi-Fi.
+
 ### 6. Limitaciones conocidas
+- **Antes de la Fase 6 no hay datos en ningún servidor:** cada navegador solo ve su propio IndexedDB. Quien abra el link ve una app vacía, no tus recursos.
 - **Hasta la Fase 6, los datos son por dispositivo:** IndexedDB vive en cada navegador, así que lo compartido desde el móvil y lo importado en el PC no se juntan hasta que exista la sincronización.
 - **Share Target solo funciona en Android** (Chrome/Edge con la PWA instalada); iOS no lo soporta.
 - **Scraping desde Vercel:** algunos sitios bloquean IPs de datacenter más que una IP doméstica. El fallback del scraper cubre esos casos (el link se guarda igual, con menos metadatos).
